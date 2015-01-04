@@ -134,7 +134,7 @@ def grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, es_index_nam
   try:
     tar.close()
     tarball_dest = os.path.join(dest_dir, tarball_name)
-    os.rename(tarball,tarball_dest)
+    shutil.move(tarball,tarball_dest)
     logger.info('New grafana dashboards backup at %s' % tarball_dest)
   except Exception as e:
     logging.critical('Failed to move tarball to %s' % dest_dir)
