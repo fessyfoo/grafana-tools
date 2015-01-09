@@ -14,9 +14,11 @@ import tarfile
 import tempfile
 import urllib
 import urllib2
+import errno
 
 
-def grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, es_index_name, debug):
+def grafana_dashboard_backups( elastic_host, elastic_port, dest_dir, es_index_name, debug, working_dir, make_tarball = True):
+
   '''Saves all Grafana dashboards stored in Elasticsearch in a tarball
   
      Uses Elasticsearch API to get all saved dashboards into a tarball, the 
@@ -74,16 +76,28 @@ def grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, es_index_nam
     dump_file = codecs.open(filename, 'w', 'utf-8')
     json.dump(data, dump_file, sort_keys = True, indent = 2, ensure_ascii=False)
     dump_file.close()
-  
+ 
+  # TODO a better way?? http://stackoverflow.com/questions/600268/mkdir-p-functionality-in-python
+  def mkdir_p(path):
+      try:
+          os.makedirs(path)
+      except OSError as exc: # Python >2.5
+          if exc.errno == errno.EEXIST and os.path.isdir(path):
+              pass
+          else: raise
+ 
   # Conveniance vars
   es_type        = 'dashboard'
   es_url         = 'http://%s:%s' % (elastic_host, elastic_port)
   dashboards_url = '%s/%s/%s/_search' % (es_url, es_index_name, es_type)
   scroll_url     = '%s/_search/scroll' % es_url
   scroll_time    = '1m'
-  work_tmp_dir   = tempfile.mkdtemp()
+  work_tmp_dir   = working_dir or tempfile.mkdtemp()
   utc_datetime   = datetime.datetime.utcnow()
   formatted_time = utc_datetime.strftime("%Y-%m-%d-%H%MZ")
+
+  if working_dir:
+      mkdir_p(working_dir)
   
   if debug:
     logger.info('Grabbing grafana dashboards from: %s' % dashboards_url)
@@ -92,9 +106,10 @@ def grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, es_index_nam
 
   # Create a tarball with all the dashboards and move to target dir
   
-  tarball_name = '%s.%s.tar.gz' % (es_index_name, formatted_time)
-  tarball      = os.path.join(work_tmp_dir, tarball_name)
-  tar          = tarfile.open(tarball, 'w:gz')
+  if make_tarball: 
+    tarball_name = '%s.%s.tar.gz' % (es_index_name, formatted_time)
+    tarball      = os.path.join(work_tmp_dir, tarball_name)
+    tar          = tarfile.open(tarball, 'w:gz')
 
   if not scroll_id:
     raise Exception('Failed to get scroll id')
@@ -117,13 +132,15 @@ def grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, es_index_nam
         dashboard_file_path  = os.path.join(work_tmp_dir, dashboard_file_name)
 
         json_dump(dashboard_definition, dashboard_file_path)
-        tar.add(dashboard_file_path, '%s/%s' % (es_index_name, dashboard_file_name))
+        if make_tarball:
+          tar.add(dashboard_file_path, '%s/%s' % (es_index_name, dashboard_file_name))
 
         metadata_file_name = '%s.metadata.json' % dashboard_base_name
         metadata_file_path = os.path.join(work_tmp_dir, metadata_file_name)
         source['dashboard'] = 'stored in alternate file %s' % dashboard_file_name
         json_dump(hit, metadata_file_path)
-        tar.add(metadata_file_path, '%s/%s' % (es_index_name, metadata_file_name))
+        if make_tarball:
+          tar.add(metadata_file_path, '%s/%s' % (es_index_name, metadata_file_name))
 
         logger.info('Added %s to the dashboards backup tarball' % did)
 
@@ -131,19 +148,21 @@ def grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, es_index_nam
       logging.critical(e)
       sys.exit(1)
   
-  try:
-    tar.close()
-    tarball_dest = os.path.join(dest_dir, tarball_name)
-    os.rename(tarball,tarball_dest)
-    logger.info('New grafana dashboards backup at %s' % tarball_dest)
-  except Exception as e:
-    logging.critical('Failed to move tarball to %s' % dest_dir)
-    logging.critical(e)
-    sys.exit(1)
+  if make_tarball:
+    try:
+      tar.close()
+      tarball_dest = os.path.join(dest_dir, tarball_name)
+      os.rename(tarball,tarball_dest)
+      logger.info('New grafana dashboards backup at %s' % tarball_dest)
+    except Exception as e:
+      logging.critical('Failed to move tarball to %s' % dest_dir)
+      logging.critical(e)
+      sys.exit(1)
   
   # Clean up
   try:
-    shutil.rmtree(work_tmp_dir)
+    if not working_dir:
+      shutil.rmtree(work_tmp_dir)
   except Exception as e:
     logging.critical(e)
     sys.exit(1)
@@ -179,6 +198,17 @@ def main():
     dest    = 'es_index_name',
     help    = 'the elasticsearch index that contains the dashboards',
     metavar = 'ELASTICSEARCH_INDEX')
+
+  parser.add_option('--working-dir',
+    default = "",
+    dest    = 'working_dir',
+    help    = 'working directory in which to store tree of json files')
+
+  parser.add_option('--no-tarball',
+    action  = 'store_false',
+    default = True,
+    dest    = 'make_tarball',
+    help    = 'do not make a tarball, use with --working-dir to just make a tree of files')
   
   (options, args) = parser.parse_args()
   
@@ -190,7 +220,7 @@ def main():
   dest_dir = options.dest_dir
   debug = options.debug
 
-  grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, options.es_index_name, debug)
+  grafana_dashboard_backups(elastic_host, elastic_port, dest_dir, options.es_index_name, debug, options.working_dir, options.make_tarball)
 
 if __name__ == '__main__':
   main()
